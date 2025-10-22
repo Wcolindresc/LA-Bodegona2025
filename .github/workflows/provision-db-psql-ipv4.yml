@@ -1,0 +1,78 @@
+name: Provision DB (psql IPv4)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL || vars.DATABASE_URL }}
+      MIGRATIONS_DIR: ${{ vars.MIGRATIONS_DIR || 'supabase/migrations' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate env
+        shell: bash
+        run: |
+          set -e
+          [ -n "${DATABASE_URL}" ] || { echo "❌ Falta DATABASE_URL (Secret o Var)"; exit 1; }
+          echo "${DATABASE_URL}" | grep -Eq '^postgres(ql)?://' || { echo "❌ DATABASE_URL debe iniciar con postgresql://"; exit 1; }
+          [ -d "${MIGRATIONS_DIR}" ] || { echo "❌ No existe ${MIGRATIONS_DIR}"; exit 1; }
+          echo "✅ Variables OK"
+
+      - name: Install psql + dig
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y postgresql-client dnsutils
+
+      - name: Extract host and force IPv4
+        id: host
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+        shell: bash
+        run: |
+          set -e
+          HOST=$(python - <<'PY'
+import os, re
+u=os.environ['DATABASE_URL']; print(re.search(r'@([^:/?]+)', u).group(1))
+PY
+)
+          IPV4=$(dig +short A "$HOST" | head -n1)
+          [ -n "$IPV4" ] || { echo "No se pudo resolver IPv4 de $HOST"; exit 1; }
+          echo "host=$HOST" >> $GITHUB_OUTPUT
+          echo "ipv4=$IPV4" >> $GITHUB_OUTPUT
+          echo "IPv4: $IPV4"
+
+      - name: Build IPv4 DSN with sslmode
+        id: dsn
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          IPV4: ${{ steps.host.outputs.ipv4 }}
+        shell: bash
+        run: |
+          set -e
+          URL_IPV4=$(python - <<'PY'
+import os, re
+url=os.environ['DATABASE_URL']; ip=os.environ['IPV4']
+url=re.sub(r'@([^:/?]+)', '@'+ip, url, count=1)
+url += ('&' if '?' in url else '?') + 'sslmode=require'
+print(url)
+PY
+)
+          echo "url=$URL_IPV4" >> $GITHUB_OUTPUT
+
+      - name: Apply migrations (psql IPv4)
+        env:
+          URL: ${{ steps.dsn.outputs.url }}
+          MIGRATIONS_DIR: ${{ env.MIGRATIONS_DIR }}
+        shell: bash
+        run: |
+          set -e
+          for f in $(ls "${MIGRATIONS_DIR}"/*.sql | sort); do
+            echo "-> $f"
+            psql "$URL" -f "$f"
+          done
+          echo "✅ All migrations applied (psql)."
