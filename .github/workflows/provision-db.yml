@@ -1,26 +1,32 @@
+name: Provision Database
+on:
+  workflow_dispatch:
 
-- name: Apply migrations
-  env:
-    DATABASE_URL: ${{ secrets.DATABASE_URL }}
-  run: |
-    python - <<'PYCODE'
-import os
-import psycopg2
-import glob
-from urllib.parse import urlparse
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-database_url = os.getenv('DATABASE_URL')
-conn = psycopg2.connect(database_url, sslmode='require')
-conn.autocommit = True
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
-with conn.cursor() as cur:
-    print("Applying migrations...")
-    for file in sorted(glob.glob('supabase/migrations/*.sql')):
-        print(f"Running {file}")
-        with open(file, 'r', encoding='utf-8') as f:
-            sql = f.read()
-            cur.execute(sql)
+      - name: Validate DATABASE_URL
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if ! echo "$DATABASE_URL" | grep -q '^postgresql://'; then
+            echo "❌ DATABASE_URL debe iniciar con postgresql://"; exit 1; fi
+          echo "✅ DATABASE_URL OK"
 
-print("✅ All migrations applied successfully.")
-conn.close()
-PYCODE
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          PGSSLMODE: require
+        run: |
+          set -e
+          for f in $(ls -1 supabase/migrations/*.sql | sort); do
+            echo "🏗️ Ejecutando $f"
+            psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+          echo "✅ Migraciones aplicadas"
