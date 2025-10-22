@@ -7,63 +7,65 @@ jobs:
   provision:
     runs-on: ubuntu-latest
 
+    # Toma primero Secrets; si no hay, usa Repo Variables (Settings → Variables)
     env:
-      # Toma primero secrets; si no hay, usa vars (repo variables)
       DATABASE_URL: ${{ secrets.DATABASE_URL || vars.DATABASE_URL }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}
       SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY || vars.SUPABASE_ANON_KEY }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY || vars.SUPABASE_SERVICE_ROLE_KEY }}
+      MIGRATIONS_DIR: supabase/migrations
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install psql client
-      run: |
-        sudo apt-get update -y
-        sudo apt-get install -y postgresql-client
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
 
-    - name: Validate env
-      shell: bash
-      run: |
-        set -e
-        if [ -z "${DATABASE_URL}" ]; then
-          echo "❌ Falta DATABASE_URL en Secrets o Vars"; exit 1
-        fi
-        if ! echo "${DATABASE_URL}" | grep -qE '^postgres(ql)?://'; then
-          echo "❌ DATABASE_URL debe iniciar con postgresql:// o postgres://"; exit 1
-        fi
-        echo "✅ DATABASE_URL OK"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install psycopg2-binary python-dotenv
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.12"
+      - name: Validate env
+        shell: bash
+        run: |
+          set -e
+          [ -n "${DATABASE_URL}" ] || { echo "❌ Falta DATABASE_URL (Secret o Var)"; exit 1; }
+          echo "${DATABASE_URL}" | grep -Eq '^postgres(ql)?://' || { echo "❌ DATABASE_URL debe iniciar con postgresql://"; exit 1; }
+          [ -d "${MIGRATIONS_DIR}" ] || { echo "❌ No existe el directorio ${MIGRATIONS_DIR}"; exit 1; }
+          echo "✅ Variables OK"
 
-    - name: Install deps
-      run: |
-        python -m pip install --upgrade pip
-        pip install psycopg2-binary python-dotenv
-
-    - name: Apply migrations
-      env:
-        DATABASE_URL: ${{ env.DATABASE_URL }}
-      run: |
-        python - <<'PYCODE'
+      - name: Apply migrations
+        env:
+          DATABASE_URL: ${{ env.DATABASE_URL }}
+          MIGRATIONS_DIR: ${{ env.MIGRATIONS_DIR }}
+        run: |
+          python - <<'PYCODE'
 import os, glob, psycopg2
+
 dburl = os.environ["DATABASE_URL"]
-# Forzar SSL con Supabase (si no viene en la URL)
+# Forzar SSL para Supabase si no viene
 if "sslmode=" not in dburl:
-    if "?" in dburl: dburl += "&sslmode=require"
-    else: dburl += "?sslmode=require"
+    dburl += ("&" if "?" in dburl else "?") + "sslmode=require"
+
+migrations_dir = os.environ.get("MIGRATIONS_DIR", "supabase/migrations")
+
 conn = psycopg2.connect(dburl)
 conn.autocommit = True
-print("Applying migrations...")
+print(f"Applying migrations from: {migrations_dir}")
+
+paths = sorted(glob.glob(os.path.join(migrations_dir, "*.sql")))
+if not paths:
+    print("⚠️  No se encontraron archivos .sql"); raise SystemExit(0)
+
 with conn.cursor() as cur:
-    for path in sorted(glob.glob("supabase/migrations/*.sql")):
-        print(f"-> {path}")
-        with open(path, "r", encoding="utf-8") as f:
+    for p in paths:
+        print(f"-> {p}")
+        with open(p, "r", encoding="utf-8") as f:
             cur.execute(f.read())
 print("✅ All migrations applied.")
 conn.close()
 PYCODE
-
