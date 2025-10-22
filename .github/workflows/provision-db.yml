@@ -66,3 +66,4 @@ with conn.cursor() as cur:
 print("✅ All migrations applied.")
 conn.close()
 PYCODE
+
