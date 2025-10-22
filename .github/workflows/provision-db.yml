@@ -1,19 +1,26 @@
 
-name: Provision Database
-on:
-  workflow_dispatch:
-jobs:
-  provision:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - name: Install deps
-        run: pip install psycopg2-binary python-dotenv
-      - name: Apply migrations
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: |
-          python - <<'PY'\nimport os, psycopg2, glob\nurl=os.environ['DATABASE_URL']\nconn=psycopg2.connect(url)\nconn.autocommit=True\ncur=conn.cursor()\nfor f in sorted(glob.glob('supabase/migrations/*.sql')):\n  print('Applying',f)\n  with open(f,'r',encoding='utf-8') as fh:\n    cur.execute(fh.read())\nprint('Done')\nPY
+- name: Apply migrations
+  env:
+    DATABASE_URL: ${{ secrets.DATABASE_URL }}
+  run: |
+    python - <<'PYCODE'
+import os
+import psycopg2
+import glob
+from urllib.parse import urlparse
+
+database_url = os.getenv('DATABASE_URL')
+conn = psycopg2.connect(database_url, sslmode='require')
+conn.autocommit = True
+
+with conn.cursor() as cur:
+    print("Applying migrations...")
+    for file in sorted(glob.glob('supabase/migrations/*.sql')):
+        print(f"Running {file}")
+        with open(file, 'r', encoding='utf-8') as f:
+            sql = f.read()
+            cur.execute(sql)
+
+print("✅ All migrations applied successfully.")
+conn.close()
+PYCODE
